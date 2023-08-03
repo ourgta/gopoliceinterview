@@ -1,0 +1,12 @@
+version: "3"
+
+services:
+  gopoliceinterview:
+    container_name: gopoliceinterview
+    image: gopoliceinterview
+    restart: unless-stopped
+    environment:
+      - "TIMEOUT=10"
+      - "SERVER_ID=${SERVER_ID}"
+      - "CHANNEL_ID=${CHANNEL_ID}"
+      - "WEBHOOK=${WEBHOOK}"
