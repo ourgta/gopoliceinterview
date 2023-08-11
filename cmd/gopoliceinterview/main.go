@@ -62,15 +62,13 @@ func main() {
 	var (
 		clients = map[int]map[int][]string{}
 		session = discord.Session{}
-		last    time.Time
 		init    bool
 	)
 
-	for {
-		if !last.IsZero() {
-			time.Sleep(time.Until(last.Add(time.Duration(timeout) * time.Minute)))
-		}
+	ticker := time.NewTicker(time.Duration(timeout) * time.Minute)
+	defer ticker.Stop()
 
+	for range ticker.C {
 		var (
 			newClients = map[int]map[int][]string{}
 			messages   = map[string]string{}
@@ -82,8 +80,6 @@ func main() {
 				if err != nil {
 					return
 				}
-
-				last = time.Now()
 
 				defer func(resp *http.Response) {
 					err := resp.Body.Close()
