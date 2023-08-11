@@ -7,6 +7,5 @@ services:
     restart: unless-stopped
     environment:
       - "TIMEOUT=10"
-      - "SERVER_ID=${SERVER_ID}"
-      - "CHANNEL_ID=${CHANNEL_ID}"
-      - "WEBHOOK=${WEBHOOK}"
+    volumes:
+      - "./config.json:/config.json"

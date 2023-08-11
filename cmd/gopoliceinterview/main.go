@@ -1,136 +1,185 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"gopoliceinterview/internal/discord"
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
-	"golang.org/x/exp/slices"
 )
 
 func main() {
-	serverId := os.Getenv("SERVER_ID")
-	channelId := os.Getenv("CHANNEL_ID")
+	var configs []struct {
+		ServerID      int    `json:"serverId"`
+		ChannelID     int    `json:"channelId"`
+		WebhookURL    string `json:"webhookUrl"`
+		MessageSuffix string `json:"messageSuffix"`
+	}
+
+	if contents, err := os.ReadFile("config.json"); err != nil {
+		log.Fatal("readfile:", err)
+	} else {
+		if err := json.Unmarshal(contents, &configs); err != nil {
+			log.Fatal("unmarshal:", err)
+		}
+	}
+
+	servers := map[int][]struct {
+		ChannelID     int
+		WebhookURL    string
+		MessageSuffix string
+	}{}
+
+	for _, config := range configs {
+		servers[config.ServerID] = append(servers[config.ServerID], struct {
+			ChannelID     int
+			WebhookURL    string
+			MessageSuffix string
+		}{
+			config.ChannelID,
+			config.WebhookURL,
+			config.MessageSuffix,
+		})
+	}
+
 	t := os.Getenv("TIMEOUT")
 	timeout, err := strconv.Atoi(t)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	webhook := os.Getenv("WEBHOOK")
-	session := discord.Session{
-		Webhook: webhook,
-	}
-
-	var clients []string
-	var last time.Time
-	init := false
+	var (
+		clients = map[int]map[int][]string{}
+		session = discord.Session{}
+		last    time.Time
+		init    bool
+	)
 
 	for {
-		time.Sleep(time.Until(last.Add(time.Duration(timeout) * time.Minute)))
-
-		doc, err := func() (doc *goquery.Document, err error) {
-			resp, err := http.Get("https://www.tsviewer.com/ts3viewer.php?ID=" + url.QueryEscape(serverId))
-			if err != nil {
-				return
-			}
-
-			last = time.Now()
-
-			defer func(resp *http.Response) {
-				err := resp.Body.Close()
-				if err != nil {
-					log.Println(err)
-				}
-			}(resp)
-
-			if resp.StatusCode != 200 {
-				err = errors.New(resp.Status)
-				return
-			}
-
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				return
-			}
-
-			var html string
-			for _, line := range strings.Split(string(body), "\n") {
-				after, found := strings.CutPrefix(line, "TSV.ViewerScript.Data["+serverId+"]['html'] = ")
-				if !found {
-					continue
-				}
-
-				after, found = strings.CutSuffix(after, "';")
-				if !found {
-					continue
-				}
-
-				html = strings.ReplaceAll(after, "\\\"", "\"")
-			}
-
-			if html == "" {
-				err = errors.New("no html")
-				return
-			}
-
-			doc, err = goquery.NewDocumentFromReader(strings.NewReader(html))
-			return
-		}()
-
-		if err != nil {
-			log.Println(err)
-			continue
+		if !last.IsZero() {
+			time.Sleep(time.Until(last.Add(time.Duration(timeout) * time.Minute)))
 		}
 
-		var newClients []string
-		var message string
-		doc.Find("div.tsv_user").Each(func(_ int, s *goquery.Selection) {
-			id, exists := s.Attr("data-cid")
-			if !exists {
+		var (
+			newClients = map[int]map[int][]string{}
+			messages   = map[string]string{}
+		)
+
+		for server, channels := range servers {
+			doc, err := func() (doc *goquery.Document, err error) {
+				resp, err := http.Get(fmt.Sprintf("https://www.tsviewer.com/ts3viewer.php?ID=%v", server))
+				if err != nil {
+					return
+				}
+
+				last = time.Now()
+
+				defer func(resp *http.Response) {
+					err := resp.Body.Close()
+					if err != nil {
+						log.Println("close:", err)
+					}
+				}(resp)
+
+				if resp.StatusCode != 200 {
+					err = errors.New(resp.Status)
+					return
+				}
+
+				body, err := io.ReadAll(resp.Body)
+				if err != nil {
+					return
+				}
+
+				var html string
+				for _, line := range strings.Split(string(body), "\n") {
+					after, found := strings.CutPrefix(line, fmt.Sprintf("TSV.ViewerScript.Data[%v]['html'] = ", server))
+					if !found {
+						continue
+					}
+
+					before, found := strings.CutSuffix(after, "';")
+					if !found {
+						continue
+					}
+
+					html = strings.ReplaceAll(before, "\\\"", "\"")
+				}
+
+				if html == "" {
+					err = errors.New("no html")
+					return
+				}
+
+				doc, err = goquery.NewDocumentFromReader(strings.NewReader(html))
 				return
+			}()
+
+			if err != nil {
+				log.Println("document:", err)
+				continue
 			}
 
-			if id != channelId {
-				return
+			doc.Find("div.tsv_user").Each(func(_ int, s *goquery.Selection) {
+				var id int
+				if val, exists := s.Attr("data-cid"); !exists {
+					return
+				} else {
+					if id, err = strconv.Atoi(val); err != nil {
+						return
+					}
+				}
+
+				for _, channel := range channels {
+					if id != channel.ChannelID {
+						continue
+					}
+
+					name, _ := s.Attr("data-client_nickname")
+					if newClients[server] == nil {
+						newClients[server] = map[int][]string{}
+					}
+
+					newClients[server][id] = append(newClients[server][id], name)
+					if !init {
+						continue
+					}
+
+					if slices.Contains(clients[server][id], name) {
+						continue
+					}
+
+					if messages[channel.WebhookURL] != "" {
+						messages[channel.WebhookURL] += "\n"
+					}
+
+					messages[channel.WebhookURL] += fmt.Sprintf("**%v**%v", name, channel.MessageSuffix)
+				}
+			})
+		}
+
+		for webhookURL, message := range messages {
+			if message == "" {
+				continue
 			}
 
-			name, _ := s.Attr("data-client_nickname")
-			newClients = append(newClients, name)
-			if !init {
-				return
+			session.Webhook = webhookURL
+			err = session.Message(message)
+			if err != nil {
+				log.Println("message", err)
 			}
-
-			if slices.Contains(clients, name) {
-				return
-			}
-
-			if message != "" {
-				message += "\n"
-			}
-
-			message += fmt.Sprintf("**%v** is waiting for an interview", name)
-		})
+		}
 
 		clients = newClients
 		init = true
-
-		if message == "" {
-			continue
-		}
-
-		err = session.Message(message)
-		if err != nil {
-			log.Println(err)
-		}
 	}
 }
