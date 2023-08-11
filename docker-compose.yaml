@@ -7,5 +7,6 @@ services:
     restart: unless-stopped
     environment:
       - "TIMEOUT=10"
+      - "BLACKLIST=${BLACKLIST}"
     volumes:
       - "./config.json:/config.json"

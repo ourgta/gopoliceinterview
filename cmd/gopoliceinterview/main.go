@@ -25,6 +25,8 @@ func main() {
 		MessageSuffix string `json:"messageSuffix"`
 	}
 
+	blacklist := strings.Split(os.Getenv("BLACKLIST"), ",")
+
 	if contents, err := os.ReadFile("config.json"); err != nil {
 		log.Fatal("readfile:", err)
 	} else {
@@ -130,6 +132,12 @@ func main() {
 			}
 
 			doc.Find("div.tsv_user").Each(func(_ int, s *goquery.Selection) {
+				if val, exists := s.Attr("data-client_unique_identifier"); exists {
+					if slices.Contains(blacklist, val) {
+						return
+					}
+				}
+
 				var id int
 				if val, exists := s.Attr("data-cid"); !exists {
 					return
